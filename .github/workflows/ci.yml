@@ -4,19 +4,97 @@ on:
   push:
 
 env:
+  IMAGE_DB: database
+  IMAGE_BACKEND: backend
+  IMAGE_FRONTEND: frontend
 
 jobs:
-  
+
   code:
     name: Code
+    runs-on: [self-hosted]
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generar versión
+        id: version
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          VERSION="${{ github.run_number }}-${SHORT_SHA}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Versión generada: $VERSION"
+
+  build:
+    name: Build
+    needs: code
     runs-on: [self-hosted]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-  build:
-    name: Build
-    runs-on: [self-hosted]
-    steps:
+      - name: Build database
+        run: docker build -t ${{ env.IMAGE_DB }}:ci ./github/db
+
+      - name: Build backend
+        run: docker build -t ${{ env.IMAGE_BACKEND }}:ci ./github/backend
+
+      - name: Build frontend
+        run: docker build -t ${{ env.IMAGE_FRONTEND }}:ci ./github/frontend
 
   test:
+    name: Test
+    needs: build
+    runs-on: [self-hosted]
+    steps:
+      - name: Verificar imágenes construidas
+        run: |
+          docker image inspect ${{ env.IMAGE_DB }}:ci
+          docker image inspect ${{ env.IMAGE_BACKEND }}:ci
+          docker image inspect ${{ env.IMAGE_FRONTEND }}:ci
+          echo "Todas las imágenes existen correctamente."
+
+  release:
+    name: Release
+    needs: [code, test]
+    runs-on: [self-hosted]
+    steps:
+      - name: Tag database
+        run: |
+          docker tag ${{ env.IMAGE_DB }}:ci ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_DB }}:${{ needs.code.outputs.version }}
+          docker tag ${{ env.IMAGE_DB }}:ci ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_DB }}:latest
+
+      - name: Tag backend
+        run: |
+          docker tag ${{ env.IMAGE_BACKEND }}:ci ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_BACKEND }}:${{ needs.code.outputs.version }}
+          docker tag ${{ env.IMAGE_BACKEND }}:ci ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_BACKEND }}:latest
+
+      - name: Tag frontend
+        run: |
+          docker tag ${{ env.IMAGE_FRONTEND }}:ci ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_FRONTEND }}:${{ needs.code.outputs.version }}
+          docker tag ${{ env.IMAGE_FRONTEND }}:ci ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_FRONTEND }}:latest
+
+  push:
+    name: Push
+    needs: [code, release]
+    runs-on: [self-hosted]
+    steps:
+      - name: Login a Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Push database
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_DB }}:${{ needs.code.outputs.version }}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_DB }}:latest
+
+      - name: Push backend
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_BACKEND }}:${{ needs.code.outputs.version }}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_BACKEND }}:latest
+
+      - name: Push frontend
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_FRONTEND }}:${{ needs.code.outputs.version }}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_FRONTEND }}:latest

@@ -5,8 +5,8 @@ set -e
 # DATOS A COMPLETAR:
 # ============================================
 
-GITHUB_REPOSITORY_URL="YOUR_REPO_URL"
-GITHUB_RUNNER_TOKEN="YOUR_TOKEN"
+GITHUB_REPOSITORY_URL="https://github.com/Algecas/cicd"
+GITHUB_RUNNER_TOKEN="AP6DRGCK5NVGSDIVVOYBANTKVMROA"
 
 RUNNER_NAME="vagrant-runner"
 RUNNER_LABELS="self-hosted,linux,x64,vagrant"
