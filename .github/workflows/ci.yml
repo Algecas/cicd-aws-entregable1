@@ -44,17 +44,25 @@ jobs:
       - name: Build frontend
         run: docker build -t ${{ env.IMAGE_FRONTEND }}:ci ./github/frontend
 
+  # test:
+  #   name: Test
+  #   needs: build
+  #   runs-on: [self-hosted]
+  #   steps:
+  #     - name: Verificar imágenes construidas
+  #       run: |
+  #         docker image inspect ${{ env.IMAGE_DB }}:ci
+  #         docker image inspect ${{ env.IMAGE_BACKEND }}:ci
+  #         docker image inspect ${{ env.IMAGE_FRONTEND }}:ci
+  #         echo "Todas las imágenes existen correctamente."
+
   test:
     name: Test
     needs: build
     runs-on: [self-hosted]
     steps:
-      - name: Verificar imágenes construidas
-        run: |
-          docker image inspect ${{ env.IMAGE_DB }}:ci
-          docker image inspect ${{ env.IMAGE_BACKEND }}:ci
-          docker image inspect ${{ env.IMAGE_FRONTEND }}:ci
-          echo "Todas las imágenes existen correctamente."
+      - name: Simular prueba fallida
+        run: exit 1
 
   release:
     name: Release
