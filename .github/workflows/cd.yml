@@ -9,14 +9,173 @@ on:
     branches:
       - main
 
+env:
+  IMAGE_DB: database
+  IMAGE_BACKEND: backend
+  IMAGE_FRONTEND: frontend
+  NETWORK_NAME: cicd-network
+
 jobs:
-  validar-ci:
-    name: Validar resultado de CI
+  pull:
+    name: Pull
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted]
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Determinar versión generada por CI
+        id: version
+        run: |
+          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+          VERSION="${{ github.event.workflow_run.run_number }}-${SHORT_SHA}"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Versión que se desplegará: $VERSION"
+
+      - name: Login en Docker Hub
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" |
+            docker login \
+              -u "${{ secrets.DOCKERHUB_USERNAME }}" \
+              --password-stdin
+
+      - name: Descargar imágenes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          REGISTRY="${{ secrets.DOCKERHUB_USERNAME }}"
+
+          docker pull "${REGISTRY}/${IMAGE_DB}:${VERSION}"
+          docker pull "${REGISTRY}/${IMAGE_BACKEND}:${VERSION}"
+          docker pull "${REGISTRY}/${IMAGE_FRONTEND}:${VERSION}"
+
+      - name: Logout de Docker Hub
+        if: always()
+        run: docker logout
+
+  deploy:
+    name: Deploy
+    needs: pull
     runs-on: [self-hosted]
 
     steps:
-      - name: Confirmar inicio de CD
+      - name: Eliminar contenedores anteriores
         run: |
-          echo "El workflow de CI terminó correctamente."
-          echo "El enlace entre CI y CD funciona."
+          docker rm -f frontend 2>/dev/null || true
+          docker rm -f backend 2>/dev/null || true
+          docker rm -f database 2>/dev/null || true
+
+      - name: Crear red Docker
+        run: |
+          docker network inspect "${NETWORK_NAME}" >/dev/null 2>&1 ||
+            docker network create "${NETWORK_NAME}"
+
+      - name: Desplegar base de datos
+        run: |
+          VERSION="${{ needs.pull.outputs.version }}"
+          REGISTRY="${{ secrets.DOCKERHUB_USERNAME }}"
+
+          docker run -d \
+            --name database \
+            --network "${NETWORK_NAME}" \
+            -e POSTGRES_DB=saludos_db \
+            -e POSTGRES_USER=saludos_user \
+            -e POSTGRES_PASSWORD=saludos_password \
+            "${REGISTRY}/${IMAGE_DB}:${VERSION}"
+
+      - name: Esperar disponibilidad de la base de datos
+        run: |
+          for intento in $(seq 1 30); do
+            if docker exec database \
+              pg_isready \
+              -U saludos_user \
+              -d saludos_db; then
+              echo "Base de datos disponible."
+              exit 0
+            fi
+
+            echo "Esperando base de datos: intento ${intento}/30"
+            sleep 2
+          done
+
+          echo "La base de datos no quedó disponible."
+          docker logs database
+          exit 1
+
+      - name: Desplegar backend
+        run: |
+          VERSION="${{ needs.pull.outputs.version }}"
+          REGISTRY="${{ secrets.DOCKERHUB_USERNAME }}"
+
+          docker run -d \
+            --name backend \
+            --network "${NETWORK_NAME}" \
+            "${REGISTRY}/${IMAGE_BACKEND}:${VERSION}"
+
+      - name: Esperar disponibilidad del backend
+        run: |
+          for intento in $(seq 1 30); do
+            if docker exec backend python -c \
+              "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')" \
+              >/dev/null 2>&1; then
+              echo "Backend disponible."
+              exit 0
+            fi
+
+            echo "Esperando backend: intento ${intento}/30"
+            sleep 2
+          done
+
+          echo "El backend no quedó disponible."
+          docker logs backend
+          exit 1
+
+      - name: Desplegar frontend
+        run: |
+          VERSION="${{ needs.pull.outputs.version }}"
+          REGISTRY="${{ secrets.DOCKERHUB_USERNAME }}"
+
+          docker run -d \
+            --name frontend \
+            --network "${NETWORK_NAME}" \
+            -p 8080:80 \
+            "${REGISTRY}/${IMAGE_FRONTEND}:${VERSION}"
+
+  verification:
+    name: Verificación
+    needs: deploy
+    runs-on: [self-hosted]
+
+    steps:
+      - name: Verificar contenedores
+        run: |
+          docker ps \
+            --filter "name=database" \
+            --filter "name=backend" \
+            --filter "name=frontend"
+
+      - name: Verificar frontend
+        run: |
+          curl --fail \
+            --retry 10 \
+            --retry-delay 2 \
+            http://localhost:8080/
+
+      - name: Verificar health del backend
+        run: |
+          curl --fail \
+            --retry 10 \
+            --retry-delay 2 \
+            http://localhost:8080/api/health
+
+      - name: Verificar comunicación con la base de datos
+        run: |
+          curl --fail \
+            --retry 10 \
+            --retry-delay 2 \
+            http://localhost:8080/api/saludo
+
+      - name: Mostrar estado final
+        run: |
+          echo "Despliegue verificado correctamente."
+          docker ps
