@@ -1,0 +1,22 @@
+name: Continuous Deployment
+
+on:
+  workflow_run:
+    workflows:
+      - "Continuous Integration"
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  validar-ci:
+    name: Validar resultado de CI
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted]
+
+    steps:
+      - name: Confirmar inicio de CD
+        run: |
+          echo "El workflow de CI terminó correctamente."
+          echo "El enlace entre CI y CD funciona."
