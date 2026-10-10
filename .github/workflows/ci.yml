@@ -3,8 +3,8 @@ name: Continuous Integration
 on:
   push:
     branches: [develop, main]
-  pull_request:
-    branches: [develop, main]
+  # The workflow uses a self-hosted runner. It is intentionally not triggered
+  # by pull requests so code from public forks cannot execute on that runner.
   workflow_dispatch:
 
 permissions:
