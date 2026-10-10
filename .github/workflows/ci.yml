@@ -72,10 +72,10 @@ jobs:
       - name: Run backend unit tests
         run: |
           docker run --rm \
-            --entrypoint pytest \
+            --entrypoint python \
             -v "$PWD/github/backend/tests:/app/tests:ro" \
             "${IMAGE_BACKEND}:ci-${GITHUB_SHA}" \
-            -p no:cacheprovider --cov=app --cov-report=term-missing
+            -m pytest -p no:cacheprovider --cov=app --cov-report=term-missing
 
   release:
     name: Release
