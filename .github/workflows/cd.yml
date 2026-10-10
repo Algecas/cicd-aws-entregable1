@@ -2,180 +2,122 @@ name: Continuous Deployment
 
 on:
   workflow_run:
-    workflows:
-      - "Continuous Integration"
-    types:
-      - completed
-    branches:
-      - main
+    workflows: ["Continuous Integration"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Immutable Docker image tag to deploy or roll back to
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
 
 env:
-  IMAGE_DB: database
-  IMAGE_BACKEND: backend
-  IMAGE_FRONTEND: frontend
-  NETWORK_NAME: cicd-network
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  REGISTRY: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
-  pull:
-    name: Pull
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: [self-hosted]
+  prepare:
+    name: Prepare release
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, linux, x64, aws]
     outputs:
-      version: ${{ steps.version.outputs.version }}
-
+      image_tag: ${{ steps.release.outputs.image_tag }}
     steps:
-      - name: Determinar versión generada por CI
-        id: version
+      - name: Resolve image tag
+        id: release
+        shell: bash
+        env:
+          MANUAL_TAG: ${{ inputs.image_tag }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
-          VERSION="${{ github.event.workflow_run.run_number }}-${SHORT_SHA}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            image_tag="${MANUAL_TAG}"
+          else
+            image_tag="${RUN_NUMBER}-${HEAD_SHA:0:7}"
+          fi
 
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Versión que se desplegará: $VERSION"
+          [[ "${image_tag}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]
+          echo "image_tag=${image_tag}" >> "$GITHUB_OUTPUT"
+          echo "Deploying release ${image_tag}"
 
-      - name: Login en Docker Hub
+      - name: Validate deployment configuration
+        env:
+          BACKEND_INSTANCE_ID: ${{ vars.BACKEND_INSTANCE_ID }}
+          FRONTEND_INSTANCE_IDS: ${{ vars.FRONTEND_INSTANCE_IDS }}
+          APP_URL: ${{ vars.APP_URL }}
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" |
-            docker login \
-              -u "${{ secrets.DOCKERHUB_USERNAME }}" \
-              --password-stdin
+          test -n "$AWS_REGION"
+          test -n "$REGISTRY"
+          test -n "$BACKEND_INSTANCE_ID"
+          test -n "$FRONTEND_INSTANCE_IDS"
+          test -n "$APP_URL"
+          [[ "$REGISTRY" =~ ^[a-z0-9][a-z0-9_-]{1,254}$ ]]
+          [[ "$BACKEND_INSTANCE_ID" =~ ^i-[a-f0-9]+$ ]]
+          for instance_id in $FRONTEND_INSTANCE_IDS; do
+            [[ "$instance_id" =~ ^i-[a-f0-9]+$ ]]
+          done
+          aws sts get-caller-identity
 
-      - name: Descargar imágenes
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          REGISTRY="${{ secrets.DOCKERHUB_USERNAME }}"
-
-          docker pull "${REGISTRY}/${IMAGE_DB}:${VERSION}"
-          docker pull "${REGISTRY}/${IMAGE_BACKEND}:${VERSION}"
-          docker pull "${REGISTRY}/${IMAGE_FRONTEND}:${VERSION}"
-
-      - name: Logout de Docker Hub
-        if: always()
-        run: docker logout
-
-  deploy:
-    name: Deploy
-    needs: pull
-    runs-on: [self-hosted]
-
+  deploy-backend:
+    name: Deploy backend
+    needs: prepare
+    runs-on: [self-hosted, linux, x64, aws]
     steps:
-      - name: Eliminar contenedores anteriores
+      - name: Deploy immutable backend image through SSM
+        env:
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          INSTANCE_ID: ${{ vars.BACKEND_INSTANCE_ID }}
         run: |
-          docker rm -f frontend 2>/dev/null || true
-          docker rm -f backend 2>/dev/null || true
-          docker rm -f database 2>/dev/null || true
+          command_id=$(aws ssm send-command +            --region "$AWS_REGION" +            --instance-ids "$INSTANCE_ID" +            --document-name AWS-RunShellScript +            --comment "Deploy saludos backend ${IMAGE_TAG}" +            --parameters "commands=sudo /opt/saludos/deploy-backend.sh '${REGISTRY}' '${IMAGE_TAG}'" +            --query 'Command.CommandId' +            --output text)
 
-      - name: Crear red Docker
+          aws ssm wait command-executed +            --region "$AWS_REGION" +            --command-id "$command_id" +            --instance-id "$INSTANCE_ID"
+
+          aws ssm get-command-invocation +            --region "$AWS_REGION" +            --command-id "$command_id" +            --instance-id "$INSTANCE_ID"
+
+  deploy-frontend:
+    name: Deploy frontend
+    needs: [prepare, deploy-backend]
+    runs-on: [self-hosted, linux, x64, aws]
+    steps:
+      - name: Deploy immutable frontend image through SSM
+        env:
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          INSTANCE_IDS: ${{ vars.FRONTEND_INSTANCE_IDS }}
+          BACKEND_PRIVATE_DNS: ${{ vars.BACKEND_PRIVATE_DNS }}
         run: |
-          docker network inspect "${NETWORK_NAME}" >/dev/null 2>&1 ||
-            docker network create "${NETWORK_NAME}"
+          for instance_id in $INSTANCE_IDS; do
+            command_id=$(aws ssm send-command +              --region "$AWS_REGION" +              --instance-ids "$instance_id" +              --document-name AWS-RunShellScript +              --comment "Deploy saludos frontend ${IMAGE_TAG}" +              --parameters "commands=sudo /opt/saludos/deploy-frontend.sh '${REGISTRY}' '${IMAGE_TAG}' '${BACKEND_PRIVATE_DNS}'" +              --query 'Command.CommandId' +              --output text)
 
-      - name: Desplegar base de datos
-        run: |
-          VERSION="${{ needs.pull.outputs.version }}"
-          REGISTRY="${{ secrets.DOCKERHUB_USERNAME }}"
+            aws ssm wait command-executed +              --region "$AWS_REGION" +              --command-id "$command_id" +              --instance-id "$instance_id"
 
-          docker run -d \
-            --name database \
-            --network "${NETWORK_NAME}" \
-            -e POSTGRES_DB=saludos_db \
-            -e POSTGRES_USER=saludos_user \
-            -e POSTGRES_PASSWORD=saludos_password \
-            "${REGISTRY}/${IMAGE_DB}:${VERSION}"
-
-      - name: Esperar disponibilidad de la base de datos
-        run: |
-          for intento in $(seq 1 30); do
-            if docker exec database \
-              pg_isready \
-              -U saludos_user \
-              -d saludos_db; then
-              echo "Base de datos disponible."
-              exit 0
-            fi
-
-            echo "Esperando base de datos: intento ${intento}/30"
-            sleep 2
+            aws ssm get-command-invocation +              --region "$AWS_REGION" +              --command-id "$command_id" +              --instance-id "$instance_id"
           done
 
-          echo "La base de datos no quedó disponible."
-          docker logs database
-          exit 1
-
-      - name: Desplegar backend
-        run: |
-          VERSION="${{ needs.pull.outputs.version }}"
-          REGISTRY="${{ secrets.DOCKERHUB_USERNAME }}"
-
-          docker run -d \
-            --name backend \
-            --network "${NETWORK_NAME}" \
-            "${REGISTRY}/${IMAGE_BACKEND}:${VERSION}"
-
-      - name: Esperar disponibilidad del backend
-        run: |
-          for intento in $(seq 1 30); do
-            if docker exec backend python -c \
-              "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')" \
-              >/dev/null 2>&1; then
-              echo "Backend disponible."
-              exit 0
-            fi
-
-            echo "Esperando backend: intento ${intento}/30"
-            sleep 2
-          done
-
-          echo "El backend no quedó disponible."
-          docker logs backend
-          exit 1
-
-      - name: Desplegar frontend
-        run: |
-          VERSION="${{ needs.pull.outputs.version }}"
-          REGISTRY="${{ secrets.DOCKERHUB_USERNAME }}"
-
-          docker run -d \
-            --name frontend \
-            --network "${NETWORK_NAME}" \
-            -p 8080:80 \
-            "${REGISTRY}/${IMAGE_FRONTEND}:${VERSION}"
-
-  verification:
-    name: Verificación
-    needs: deploy
-    runs-on: [self-hosted]
-
+  verify:
+    name: Verify deployment
+    needs: [prepare, deploy-frontend]
+    runs-on: [self-hosted, linux, x64, aws]
     steps:
-      - name: Verificar contenedores
+      - name: Verify application endpoints
+        env:
+          APP_URL: ${{ vars.APP_URL }}
         run: |
-          docker ps \
-            --filter "name=database" \
-            --filter "name=backend" \
-            --filter "name=frontend"
+          curl --fail --retry 12 --retry-delay 5 "${APP_URL}/health"
+          curl --fail --retry 12 --retry-delay 5 "${APP_URL}/api/health"
+          curl --fail --retry 12 --retry-delay 5 "${APP_URL}/api/saludo"
 
-      - name: Verificar frontend
-        run: |
-          curl --fail \
-            --retry 10 \
-            --retry-delay 2 \
-            http://localhost:8080/
-
-      - name: Verificar health del backend
-        run: |
-          curl --fail \
-            --retry 10 \
-            --retry-delay 2 \
-            http://localhost:8080/api/health
-
-      - name: Verificar comunicación con la base de datos
-        run: |
-          curl --fail \
-            --retry 10 \
-            --retry-delay 2 \
-            http://localhost:8080/api/saludo
-
-      - name: Mostrar estado final
-        run: |
-          echo "Despliegue verificado correctamente."
-          docker ps
+      - name: Deployment summary
+        env:
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+        run: echo "Release ${IMAGE_TAG} deployed and verified at ${{ vars.APP_URL }}"

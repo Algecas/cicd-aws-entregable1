@@ -1,23 +1,14 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-# ============================================
-# DATOS A COMPLETAR:
-# ============================================
+: "${GITHUB_REPOSITORY_URL:?Set GITHUB_REPOSITORY_URL before running this script}"
+: "${GITHUB_RUNNER_TOKEN:?Set GITHUB_RUNNER_TOKEN before running this script}"
 
-GITHUB_REPOSITORY_URL="https://github.com/Algecas/cicd"
-GITHUB_RUNNER_TOKEN="AP6DRGCK5NVGSDIVVOYBANTKVMROA"
+RUNNER_NAME="${RUNNER_NAME:-aws-runner}"
+RUNNER_LABELS="${RUNNER_LABELS:-aws}"
+RUNNER_DIR="${RUNNER_DIR:-/opt/actions-runner}"
 
-RUNNER_NAME="vagrant-runner"
-RUNNER_LABELS="self-hosted,linux,x64,vagrant"
-RUNNER_DIR="/opt/actions-runner"
-
-# ============================================
-# REGISTRO DEL RUNNER
-# ============================================
-
-echo "Registrando runner en GitHub..."
-
+echo "Registering GitHub Actions runner..."
 cd "$RUNNER_DIR"
 
 sudo -u github-runner ./config.sh \
@@ -25,11 +16,11 @@ sudo -u github-runner ./config.sh \
   --token "$GITHUB_RUNNER_TOKEN" \
   --name "$RUNNER_NAME" \
   --labels "$RUNNER_LABELS" \
-  --unattended
+  --unattended \
+  --replace
 
-echo "Instalando runner como servicio..."
-
+echo "Installing runner service..."
 sudo ./svc.sh install github-runner
 sudo ./svc.sh start
 
-echo "GitHub Actions Runner registrado correctamente."
+echo "GitHub Actions runner registered successfully."

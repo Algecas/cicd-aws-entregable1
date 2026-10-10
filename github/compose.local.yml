@@ -1,0 +1,36 @@
+services:
+  database:
+    build: ./db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-saludos_db}
+      POSTGRES_USER: ${POSTGRES_USER:-saludos_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-saludos_local_password}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      DB_HOST: database
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-saludos_db}
+      DB_USER: ${POSTGRES_USER:-saludos_user}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-saludos_local_password}
+      DB_SSLMODE: disable
+    depends_on:
+      database:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    environment:
+      BACKEND_HOST: backend
+      BACKEND_PORT: 5000
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
