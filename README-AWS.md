@@ -5,6 +5,13 @@ entregable. La aplicación conserva tres imágenes publicables para cumplir el
 flujo de CI, pero en producción PostgreSQL se ejecutará en Amazon RDS y no como
 un contenedor permanente.
 
+La arquitectura detallada está documentada en
+[`docs/arquitectura-aws.md`](docs/arquitectura-aws.md) y puede crearse de forma
+repetible con la plantilla de
+[`infrastructure/cloudformation/main.yml`](infrastructure/cloudformation/main.yml).
+La guía de validación, despliegue, registro del runner y eliminación se
+encuentra en [`infrastructure/README.md`](infrastructure/README.md).
+
 ## Flujo de trabajo
 
 - `develop`: ejecuta checkout, build y pruebas.

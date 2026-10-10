@@ -13,7 +13,13 @@ image="${registry}/frontend:${image_tag}"
 
 docker pull "$image"
 docker rm -f frontend >/dev/null 2>&1 || true
-docker run -d +  --name frontend +  --restart unless-stopped +  -e "BACKEND_HOST=${backend_host}" +  -e BACKEND_PORT=5000 +  -p 8080:80 +  "$image"
+docker run -d \
+  --name frontend \
+  --restart unless-stopped \
+  -e "BACKEND_HOST=${backend_host}" \
+  -e BACKEND_PORT=5000 \
+  -p 8080:80 \
+  "$image"
 
 for attempt in $(seq 1 30); do
   if curl --fail --silent http://localhost:8080/health >/dev/null; then

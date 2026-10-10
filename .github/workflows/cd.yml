@@ -54,16 +54,20 @@ jobs:
       - name: Validate deployment configuration
         env:
           BACKEND_INSTANCE_ID: ${{ vars.BACKEND_INSTANCE_ID }}
+          BACKEND_PRIVATE_DNS: ${{ vars.BACKEND_PRIVATE_DNS }}
           FRONTEND_INSTANCE_IDS: ${{ vars.FRONTEND_INSTANCE_IDS }}
           APP_URL: ${{ vars.APP_URL }}
         run: |
           test -n "$AWS_REGION"
           test -n "$REGISTRY"
           test -n "$BACKEND_INSTANCE_ID"
+          test -n "$BACKEND_PRIVATE_DNS"
           test -n "$FRONTEND_INSTANCE_IDS"
           test -n "$APP_URL"
+          [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
           [[ "$REGISTRY" =~ ^[a-z0-9][a-z0-9_-]{1,254}$ ]]
           [[ "$BACKEND_INSTANCE_ID" =~ ^i-[a-f0-9]+$ ]]
+          [[ "$BACKEND_PRIVATE_DNS" =~ ^[A-Za-z0-9.-]+$ ]]
           for instance_id in $FRONTEND_INSTANCE_IDS; do
             [[ "$instance_id" =~ ^i-[a-f0-9]+$ ]]
           done
@@ -74,34 +78,74 @@ jobs:
     needs: prepare
     runs-on: [self-hosted, linux, x64, aws]
     steps:
+      - name: Checkout deployment scripts
+        uses: actions/checkout@v4
+
       - name: Deploy immutable backend image through SSM
         env:
           IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
           INSTANCE_ID: ${{ vars.BACKEND_INSTANCE_ID }}
         run: |
-          command_id=$(aws ssm send-command +            --region "$AWS_REGION" +            --instance-ids "$INSTANCE_ID" +            --document-name AWS-RunShellScript +            --comment "Deploy saludos backend ${IMAGE_TAG}" +            --parameters "commands=sudo /opt/saludos/deploy-backend.sh '${REGISTRY}' '${IMAGE_TAG}'" +            --query 'Command.CommandId' +            --output text)
+          script_b64="$(base64 -w 0 github/deploy/deploy-backend.sh)"
+          command="echo '${script_b64}' | base64 -d | sudo tee /tmp/deploy-backend.sh >/dev/null && sudo chmod 700 /tmp/deploy-backend.sh && sudo /tmp/deploy-backend.sh '${REGISTRY}' '${IMAGE_TAG}' '${AWS_REGION}'"
+          parameters="$(jq -nc --arg command "$command" '{commands:[$command]}')"
 
-          aws ssm wait command-executed +            --region "$AWS_REGION" +            --command-id "$command_id" +            --instance-id "$INSTANCE_ID"
+          command_id=$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy saludos backend ${IMAGE_TAG}" \
+            --parameters "$parameters" \
+            --query 'Command.CommandId' \
+            --output text)
 
-          aws ssm get-command-invocation +            --region "$AWS_REGION" +            --command-id "$command_id" +            --instance-id "$INSTANCE_ID"
+          aws ssm wait command-executed \
+            --region "$AWS_REGION" \
+            --command-id "$command_id" \
+            --instance-id "$INSTANCE_ID"
+
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$command_id" \
+            --instance-id "$INSTANCE_ID"
 
   deploy-frontend:
     name: Deploy frontend
     needs: [prepare, deploy-backend]
     runs-on: [self-hosted, linux, x64, aws]
     steps:
+      - name: Checkout deployment scripts
+        uses: actions/checkout@v4
+
       - name: Deploy immutable frontend image through SSM
         env:
           IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
           INSTANCE_IDS: ${{ vars.FRONTEND_INSTANCE_IDS }}
           BACKEND_PRIVATE_DNS: ${{ vars.BACKEND_PRIVATE_DNS }}
         run: |
+          script_b64="$(base64 -w 0 github/deploy/deploy-frontend.sh)"
           for instance_id in $INSTANCE_IDS; do
-            command_id=$(aws ssm send-command +              --region "$AWS_REGION" +              --instance-ids "$instance_id" +              --document-name AWS-RunShellScript +              --comment "Deploy saludos frontend ${IMAGE_TAG}" +              --parameters "commands=sudo /opt/saludos/deploy-frontend.sh '${REGISTRY}' '${IMAGE_TAG}' '${BACKEND_PRIVATE_DNS}'" +              --query 'Command.CommandId' +              --output text)
+            command="echo '${script_b64}' | base64 -d | sudo tee /tmp/deploy-frontend.sh >/dev/null && sudo chmod 700 /tmp/deploy-frontend.sh && sudo /tmp/deploy-frontend.sh '${REGISTRY}' '${IMAGE_TAG}' '${BACKEND_PRIVATE_DNS}'"
+            parameters="$(jq -nc --arg command "$command" '{commands:[$command]}')"
 
-            aws ssm wait command-executed +              --region "$AWS_REGION" +              --command-id "$command_id" +              --instance-id "$instance_id"
+            command_id=$(aws ssm send-command \
+              --region "$AWS_REGION" \
+              --instance-ids "$instance_id" \
+              --document-name AWS-RunShellScript \
+              --comment "Deploy saludos frontend ${IMAGE_TAG}" \
+              --parameters "$parameters" \
+              --query 'Command.CommandId' \
+              --output text)
 
-            aws ssm get-command-invocation +              --region "$AWS_REGION" +              --command-id "$command_id" +              --instance-id "$instance_id"
+            aws ssm wait command-executed \
+              --region "$AWS_REGION" \
+              --command-id "$command_id" \
+              --instance-id "$instance_id"
+
+            aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$command_id" \
+              --instance-id "$instance_id"
           done
 
   verify:
